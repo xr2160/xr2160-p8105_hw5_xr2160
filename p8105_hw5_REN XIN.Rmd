@@ -10,6 +10,7 @@ library(p8105.datasets)
 library(viridis)
 library(purrr)
 library(patchwork)
+library(readr)
 
 knitr::opts_chunk$set(
 	echo = TRUE,
@@ -45,7 +46,7 @@ full_df =
 
 The result of the previous code chunk isn't tidy -- data are wide rather than long, and some important variables are included as parts of others. The code chunk below tides the data using string manipulations on the file, converting from wide to long, and selecting relevant variables. 
 
-```{r}
+##
 tidy_df = 
   full_df %>% 
   mutate(
@@ -58,17 +59,17 @@ tidy_df =
     names_prefix = "week_") %>% 
   mutate(week = as.numeric(week)) %>% 
   select(group, subj = files, week, outcome)
-```
+##
 
 Finally, the code chunk below creates a plot showing individual data, faceted by group. 
 
-```{r}
+
 tidy_df %>% 
   ggplot(aes(x = week, y = outcome, group = subj, color = group)) + 
   geom_point() + 
   geom_path() + 
   facet_grid(~group)
-```
+
 
 This plot suggests high within-subject correlation -- subjects who start above average end up above average, and those that start below average end up below average. Subjects in the control group generally don't change over time, but those in the experiment group increase their outcome in a roughly linear way. 
 
@@ -82,7 +83,7 @@ Homicide = read_csv("data/homicide-data.csv")
 
 There are total 52,179 entries and 12 columns in Homicide database. Variables include `uid`, `reported_date`, `victim_last`, `victim_first`, `victim_race`, `victim_age`, `victim_sex`, `city`, `state`, `lat`,`lon`, and `disposition`. 
 
-- Cleaning the data
+###Step1 Cleaning the data
 
 ```{r}
 Homicide_df = Homicide %>% 
@@ -104,8 +105,6 @@ Homicide_df = Homicide %>%
   select(-city, -state, -disposition) %>% 
   filter (city_state != "Tulsa_AL")
 ```
-When processing the data we found an error in the name of the city and state of Tulsa, so I removed this data.
-
 
 
 ```{r}
@@ -120,6 +119,173 @@ Homicide_df_cities = Homicide_df %>%
 Homicide_df_cities = Homicide_df_cities[!rownames(Homicide_df_cities) %in% c("51") , ]
 
 ```
+Description：When processing the data we found an error in the name of the city and state of Tulsa, so I removed this data. The table shows that Chicago has the highest number of homicides, it reached 5535, and also has the highest unresolved rate (73.6%), followed by Philadelphia.
+
+```{r}
+Baltimore_df =
+  Homicide_df %>% 
+  filter(city_state == "BaltimoreMD")
+Baltimore_summary = 
+  Homicide_df %>% 
+  summarize( unsolved = sum( solved_or_not  == "unsolved"),n = n())
+ 
+Baltimore_test = 
+  prop.test(
+   x = Baltimore_summary %>% pull(unsolved),
+   n=  Baltimore_summary %>%pull(n))
+ 
+Baltimore_test %>% 
+  broom::tidy() %>%  knitr::kable()
+```
+
+
+
+###Step2 Creat a function for prop test
+
+```{r}
+prop_test_function = function(city_df) {
+  
+  city_summary = 
+  city_df %>% 
+  summarize(unsolved = sum(solved_or_not == "unsolved"), 
+            n = n())
+  city_test = 
+    prop.test(
+      x = city_summary %>% pull(unsolved), 
+      n = city_summary %>% pull(n))
+  return(city_test)
+}%>% 
+
+prop_test_function(Baltimore_df)%>% 
+
+Homicide_df %>% 
+  filter(city_state == "AlbuquerqueNM") %>% 
+  prop_test_function()
+```
+
+
+###Step3 Creat a function for prop test
+
+```{r}
+results_df = 
+  Homicide_df %>% 
+  nest(-city_state) %>% 
+  mutate(
+    test_results = map(data, prop_test_function),
+    tidy_results = map(test_results, broom::tidy)
+  ) %>% 
+  select(city_state, tidy_results) %>% 
+  unnest(tidy_results) %>% 
+  select(city_state, estimate, starts_with("conf"))
+
+```
+
+###Step4
+
+```{r}
+results_df %>% 
+  mutate(city_state = fct_reorder(city_state, estimate)) %>% 
+  ggplot(aes(x = city_state, y = estimate)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+##Problem 3 
+
+
+```{r}
+set.seed(1)
+```
+
+###Step1 Creat a function
+```{r}
+simtest = function(mu, sigma = 5, n = 30){
+  x = rnorm(n = n, mean = mu, sd = sigma)
+  a=x
+  a
+  result = t.test(x,mu = 0) %>%
+    broom::tidy()%>%
+    select(estimate,p.value)
+  return(result)
+}
+u_iteration = 
+  expand_grid(
+    mu = seq(0,6,1),
+    iterate = 1:5000) 
+sim_results_df =
+  u_iteration%>% 
+  mutate(test_coef = map(mu, simtest)
+  ) %>% 
+  unnest(test_coef)
+
+sim_results_df
+
+```
+
+###Step2
+
+
+```{r}
+sim_results_df %>%
+  group_by(mu) %>%
+  summarise(
+    rej_r = sum(p.value<0.05)/n()
+  ) %>%
+  ggplot(aes(x = mu, y = rej_r)) +
+  geom_line() +
+  labs(
+    x = "True μ",
+	  y = "Reject_Proportion",
+  )
+```
+
+
+Make a plot showing the proportion of times the null was rejected (the power of the test) on the y axis and the true value of μ on the x axis. Describe the association between effect size and power.
+
+Describe the relationship between effect size and power: we keep the sample size constant and the power increases in a decreasing gradient as the effect size increases
+
+
+###Step3
+
+
+```{r}
+Total_estimates =
+  sim_results_df %>% 
+  group_by(mu) %>% 
+  summarize(
+    average_est_mean = mean(estimate)
+  )
+
+Rejected_estimates = 
+  sim_results_df %>% 
+  filter(p.value < 0.05) %>% 
+  group_by(mu) %>% 
+  summarize(
+    average_est_mean = mean(estimate)
+  )
+
+plot1=Total_estimates %>% 
+  ggplot(aes(x = mu, y = average_est_mean)) +
+           geom_line(aes(color = "Total")) +
+           geom_point(color = "blue") +
+           labs(x = "True mean", y = "Ave_estimated mean" ) +
+  scale_x_continuous(breaks = 1:6)
+plot1
+
+plot2=Rejected_estimates %>% 
+  ggplot(aes(x = mu, y = average_est_mean)) +
+           geom_line(aes(color = "Total")) +
+           geom_point(color = "red") +
+           labs(x = "True mean", y = "Reject_Ave_estimated mean" ) +
+  scale_x_continuous(breaks = 1:6)
+plot2
+```
+
+Make a plot showing the average estimate of μ̂  on the y axis and the true value of μ on the x axis. Make a second plot (or overlay on the first) the average estimate of μ̂  only in samples for which the null was rejected on the y axis and the true value of μ on the x axis. Is the sample average of μ̂  across tests for which the null is rejected approximately equal to the true value of μ? Why or why not?
+
+From the figure, we can see that at mu less than or equal to 4, we find that the sample mean of mu that rejects the null is not equal to the true value of the mean at less than or equal to 4. However, the two curves are close to overlapping when the sample mean of mu with rejection of null is greater than 4.
+
 
 
 
