@@ -7,15 +7,16 @@ date: "2022-11-16"
 ```{r setup, include=FALSE}
 library(tidyverse)
 library(p8105.datasets)
-library(viridis)
-library(purrr)
-library(patchwork)
+library(rvest)
+library(dplyr)
 library(readr)
+library(readxl)
+set.seed(1)
 
 knitr::opts_chunk$set(
 	echo = TRUE,
 	warning = FALSE,
-	fig.width = 8, 
+	fig.width = 6, 
   fig.height = 6,
   out.width = "90%"
 )
@@ -31,9 +32,9 @@ scale_fill_discrete = scale_fill_viridis_d
 theme_set(theme_minimal() + theme(legend.position = "bottom"))
 ```
 
-
 ##Problem 1
 Solution from Jeff
+
 ```{r}
 full_df = 
   tibble(
@@ -46,7 +47,7 @@ full_df =
 
 The result of the previous code chunk isn't tidy -- data are wide rather than long, and some important variables are included as parts of others. The code chunk below tides the data using string manipulations on the file, converting from wide to long, and selecting relevant variables. 
 
-##
+```{r}
 tidy_df = 
   full_df %>% 
   mutate(
@@ -59,16 +60,18 @@ tidy_df =
     names_prefix = "week_") %>% 
   mutate(week = as.numeric(week)) %>% 
   select(group, subj = files, week, outcome)
-##
+```
 
 Finally, the code chunk below creates a plot showing individual data, faceted by group. 
 
 
+```{r}
 tidy_df %>% 
   ggplot(aes(x = week, y = outcome, group = subj, color = group)) + 
   geom_point() + 
   geom_path() + 
   facet_grid(~group)
+```
 
 
 This plot suggests high within-subject correlation -- subjects who start above average end up above average, and those that start below average end up below average. Subjects in the control group generally don't change over time, but those in the experiment group increase their outcome in a roughly linear way. 
@@ -102,96 +105,83 @@ Homicide_df = Homicide %>%
       disposition == "Closed by arrest" ~ "solved"
     )
   )%>% 
-  select(-city, -state, -disposition) %>% 
   filter (city_state != "Tulsa_AL")
 ```
 
+###Step2 summarize within cities to obtain the total number of homicides and the number of unsolved homicides
 
 ```{r}
-Homicide_df_cities = Homicide_df %>% 
+cities_df = 
+  Homicide_df %>% 
+  select(city_state, disposition, solved_or_not) %>% 
   group_by(city_state) %>% 
   summarize(
     total_homicides = n(),
     unsolved_homicides = sum(solved_or_not == "unsolved"),
-    percent_unsolved = round(unsolved_homicides*100 / total_homicides, 1)
+  percent_unsolved = round(unsolved_homicides*100 / total_homicides, 1)
   ) %>% 
   arrange(desc(total_homicides))
-Homicide_df_cities = Homicide_df_cities[!rownames(Homicide_df_cities) %in% c("51") , ]
-
+cities_df = cities_df[!rownames(cities_df) %in% c("51") , ]
+cities_df %>%
+  knitr::kable()
 ```
+
+
 Description：When processing the data we found an error in the name of the city and state of Tulsa, so I removed this data. The table shows that Chicago has the highest number of homicides, it reached 5535, and also has the highest unresolved rate (73.6%), followed by Philadelphia.
 
+
+###Step3 For the city of Baltimore, MD, use the prop. test & pull the estimated proportion and confidence intervals
 ```{r}
 Baltimore_df =
   Homicide_df %>% 
-  filter(city_state == "BaltimoreMD")
+  filter(Homicide_df$city_state == "Baltimore, MD")
+Baltimore_df
+
 Baltimore_summary = 
   Homicide_df %>% 
   summarize( unsolved = sum( solved_or_not  == "unsolved"),n = n())
- 
+Baltimore_summary
+
 Baltimore_test = 
   prop.test(
    x = Baltimore_summary %>% pull(unsolved),
    n=  Baltimore_summary %>%pull(n))
  
 Baltimore_test %>% 
-  broom::tidy() %>%  knitr::kable()
+  broom::tidy() %>%  
+  knitr::kable()
 ```
 
-
-
-###Step2 Creat a function for prop test
-
-```{r}
-prop_test_function = function(city_df) {
-  
-  city_summary = 
-  city_df %>% 
-  summarize(unsolved = sum(solved_or_not == "unsolved"), 
-            n = n())
-  city_test = 
-    prop.test(
-      x = city_summary %>% pull(unsolved), 
-      n = city_summary %>% pull(n))
-  return(city_test)
-}%>% 
-
-prop_test_function(Baltimore_df)%>% 
-
-Homicide_df %>% 
-  filter(city_state == "AlbuquerqueNM") %>% 
-  prop_test_function()
-```
-
-
-###Step3 Creat a function for prop test
+###Step4 run prop. test for each of the cities in this dataset
 
 ```{r}
 results_df = 
-  Homicide_df %>% 
-  nest(-city_state) %>% 
-  mutate(
-    test_results = map(data, prop_test_function),
-    tidy_results = map(test_results, broom::tidy)
-  ) %>% 
-  select(city_state, tidy_results) %>% 
+  cities_df %>% 
+  mutate(test_results = map2(.x = unsolved_homicides, .y = total_homicides, ~prop.test(x = .x, n = .y)),
+         tidy_results = map(test_results, broom::tidy)) %>% 
+  select(-test_results) %>% 
   unnest(tidy_results) %>% 
   select(city_state, estimate, starts_with("conf"))
-
+results_df
 ```
-
-###Step4
 
 ```{r}
 results_df %>% 
   mutate(city_state = fct_reorder(city_state, estimate)) %>% 
   ggplot(aes(x = city_state, y = estimate)) + 
-  geom_point() + 
+  geom_point(color = "red") + 
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) + 
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.title = element_text(face = "bold.italic" )) +
+  labs(title = "Figure 1: Proportion of unsolved homicides in 50 major US cities", 
+       y = "Proportion of Unsolved Homicides", 
+       x = "City", 
+       caption = "*Note: Error bars indicate 95% confidence interval")
 ```
+Description：According to the data in the graph, the probability of unsolved homicide varies greatly among the 50 major cities in the U.S. For example, the highest is Chicago, which even reached 73.6%, followed by New Orleans, LA with 64.9%. Richmond, VA, meanwhile, has the lowest unsolved homicide rate, at 26.3%.
 
-##Problem 3 
+
+###Problem 3 
 
 
 ```{r}
